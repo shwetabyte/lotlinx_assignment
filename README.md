@@ -9,7 +9,121 @@ The project consists of three main tasks:
 2. **Task 2**: Apache Airflow DAG for automated pipeline orchestration
 3. **Task 3**: SQL analytics with Gold layer data marts
 
+---
+
+## Task 1: Python Data Parser
+
+### Problem Statement
+I needed to process a compressed JSONL file (`nhtsa_file.jsonl.gz`) containing NHTSA automotive API responses, extract specific vehicle fields, handle duplicates, and output clean JSON data.
+
+### Initial Analysis and Challenges
+
+#### Challenge 1: Understanding the Data Structure
+**What I discovered:**
+- File format: JSONL.gz (JSON Lines compressed with gzip)
+- Data structure: List of dictionaries containing nested "Results" arrays
+- Each line contained: `[{"Count": 138, "SearchCriteria": "VIN:1D7RD4GG*BC", "Results": [...]}]`
+
+**Code implemented in `src/code/nhtsa_file_parser.py`:**
+```python
+def read_source_data():
+    """Read and parse the source JSONL.gz file"""
+    records = []
+    try:
+        with gzip.open(SOURCE_FILE, 'rt', encoding='utf-8') as file:
+            for line_num, line in enumerate(file, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                try:
+                    data = json.loads(line)
+                    # Handle both list and single dict formats
+                    if isinstance(data, list):
+                        records.extend(data)
+                    else:
+                        records.append(data)
+                except json.JSONDecodeError as e:
+                    print(f"Error parsing line {line_num}: {e}")
+                    continue
+    except FileNotFoundError:
+        print(f"Error: Could not find input file {SOURCE_FILE}")
+        raise
+    return records
+```
+
+#### Challenge 2: VIN Extraction from SearchCriteria
+**Problem:** VINs were embedded in SearchCriteria strings like `"VIN:1D7RD4GG*BC"`
+**Solution:** String parsing to extract exactly 11 characters after "VIN:"
+
+```python
+def extract_vehicle_data(data):
+    """Extract the required vehicle data fields from a single NHTSA record"""
+    record = DEFAULT_RECORD.copy()
+    
+    # Extract VIN from SearchCriteria
+    search_criteria = data.get("SearchCriteria", "")
+    if search_criteria and "VIN:" in search_criteria:
+        vin_part = search_criteria.split("VIN:")[-1].strip()
+        if len(vin_part) >= 11:
+            record["Sent_VIN"] = vin_part[:11]
+```
+
+#### Challenge 3: Dynamic Field Mapping
+**Problem:** The "Results" array contained multiple objects with "Variable" and "Value" keys
+**Solution:** Dictionary-based field mapping for efficient processing
+
+```python
+    # Field mapping for efficient processing
+    field_mapping = {
+        "Manufacturer Name": "Manufacturer_Name",
+        "Make": "Make", 
+        "Model": "Model",
+        "Model Year": "Model_Year",
+        "Trim": "TRIM",
+        "Vehicle Type": "Vehicle_Type_Id",
+        "Body Class": "Body_Class_Id",
+        "Base Price ($)": "Base_Price",
+        "NCSA Make": "NCSA_Make",
+        "NCSA Model": "NCSA_Model"
+    }
+    
+    # Process results with mapping
+    for result in data.get("Results", []):
+        variable = result.get("Variable", "")
+        if variable in field_mapping:
+            record[field_mapping[variable]] = result.get("Value", "") or ""
+```
+
+#### Challenge 4: Duplicate VIN Handling
+**Problem:** Multiple records could have the same VIN
+**Solution:** Set-based deduplication logic
+
+```python
+def write_to_silver():
+    """Write processed and deduplicated data to silver layer"""
+    # Read from bronze layer
+    with open(BRONZE_FILE, 'r', encoding='utf-8') as f:
+        records = json.load(f)
+    
+    processed_records = []
+    seen_vins = set()
+    
+    for record in records:
+        processed = extract_vehicle_data(record)
+        vin = processed["Sent_VIN"]
+        
+        # Add record if VIN is unique or empty
+        if not vin or vin not in seen_vins:
+            if vin:
+                seen_vins.add(vin)
+            processed_records.append(processed)
+```
+
 ## 📊 Complete Data Pipeline Architecture
+
+**Challenge:** Initially, I had repetitive code reading from source multiple times
+**Solution:** Implemented proper data lake medallion architecture
 
 ```
 ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
