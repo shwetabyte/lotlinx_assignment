@@ -1,0 +1,97 @@
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15
+    container_name: nhtsa_postgres
+    environment:
+      POSTGRES_DB: nhtsa_db
+      POSTGRES_USER: nhtsa_user
+      POSTGRES_PASSWORD: nhtsa_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nhtsa_user -d nhtsa_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # PgAdmin for database management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: nhtsa_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@nhtsa.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+    ports:
+      - "8081:80"
+    depends_on:
+      - postgres
+
+  # Airflow Webserver
+  airflow-webserver:
+    image: apache/airflow:2.8.2-python3.11
+    container_name: nhtsa_airflow_webserver
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://nhtsa_user:nhtsa_password@postgres/nhtsa_db
+      AIRFLOW__CORE__FERNET_KEY: YlCImzjge_TeZc7jGvWSkwg7JgMQyyclGsAGv3vwVSk=
+      AIRFLOW__WEBSERVER__SECRET_KEY: your-secret-key-here
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: false
+      AIRFLOW__CORE__LOAD_EXAMPLES: false
+      AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./data:/opt/airflow/data
+      - ./src:/opt/airflow/src
+      - airflow_logs:/opt/airflow/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      bash -c "
+        pip install pandas psycopg2-binary &&
+        airflow db upgrade &&
+        airflow users create --username admin --firstname Admin --lastname User --role Admin --email admin@nhtsa.com --password admin123 || true &&
+        airflow webserver
+      "
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Airflow Scheduler
+  airflow-scheduler:
+    image: apache/airflow:2.8.2-python3.11
+    container_name: nhtsa_airflow_scheduler
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://nhtsa_user:nhtsa_password@postgres/nhtsa_db
+      AIRFLOW__CORE__FERNET_KEY: YlCImzjge_TeZc7jGvWSkwg7JgMQyyclGsAGv3vwVSk=
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: false
+      AIRFLOW__CORE__LOAD_EXAMPLES: false
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./data:/opt/airflow/data
+      - ./src:/opt/airflow/src
+      - airflow_logs:/opt/airflow/logs
+    depends_on:
+      - postgres
+      - airflow-webserver
+    command: >
+      bash -c "
+        pip install pandas psycopg2-binary &&
+        airflow scheduler
+      "
+
+volumes:
+  postgres_data:
+  airflow_logs:
+
+
+
